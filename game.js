@@ -11,42 +11,42 @@
 const CONFIG = {
 
   /* ---- BALL IMAGES ------------------------------------------------------
-     Replace / add image links here. Local paths ("assets/balls/x.png") and
+     Replace / add image links here. Local paths ("balls/x.png") and
      full URLs ("https://example.com/me.png") both work.
      Square (1:1) images with a transparent background look best.
      The pile adapts automatically to the number of balls (up to ~31).      */
   BALLS: [
-    'assets/balls/aisyah.png',
-    'assets/balls/amira.png',
-    'assets/balls/arva.png',
-    'assets/balls/arya.png',
-    'assets/balls/asiyah.png',
-    'assets/balls/athar.png',
-    'assets/balls/azfar.png',
-    'assets/balls/bilal.png',
-    'assets/balls/cupin.png',
-    'assets/balls/dhan.png',
-    'assets/balls/dio.png',
-    'assets/balls/fathir.png',
-    'assets/balls/fish.png',
-    'assets/balls/hiro.png',
-    'assets/balls/icad.png',
-    'assets/balls/jey.png',
-    'assets/balls/miko.png',
-    'assets/balls/nahda.png',
-    'assets/balls/naufal.png',
-    'assets/balls/raffa.png',
-    'assets/balls/raish.png',
-    'assets/balls/rasyiq.png',
-    'assets/balls/rifqi.png',
-    'assets/balls/rizal.png',
-    'assets/balls/syahid.png',
+    'balls/aisyah.png',
+    'balls/amira.png',
+    'balls/arva.png',
+    'balls/arya.png',
+    'balls/asiyah.png',
+    'balls/athar.png',
+    'balls/azfar.png',
+    'balls/bilal.png',
+    'balls/cupin.png',
+    'balls/dhan.png',
+    'balls/dio.png',
+    'balls/fathir.png',
+    'balls/fish.png',
+    'balls/hiro.png',
+    'balls/icad.png',
+    'balls/jey.png',
+    'balls/miko.png',
+    'balls/nahda.png',
+    'balls/naufal.png',
+    'balls/raffa.png',
+    'balls/raish.png',
+    'balls/rasyiq.png',
+    'balls/rifqi.png',
+    'balls/rizal.png',
+    'balls/syahid.png',
     // 'PASTE_IMAGE_URL_HERE',      // ← add more balls by pasting links
     // 'PASTE_IMAGE_URL_HERE',
   ],
 
   /* ---- THE SPECIAL BALL (always added to the machine) ------------------ */
-  SPECIAL_BALL: 'assets/balls/prince-syahzad-of-xi-9.png',   // ← PRINCE image link
+  SPECIAL_BALL: 'balls/prince-syahzad-of-xi-9.png',   // ← PRINCE image link
   SPECIAL_NAME: 'Prince Syahzad of XI-9',
   SPECIAL_TEXT: "HE'S SO HANDSOME OMG!!",
   HIGHLIGHT_SPECIAL: true,   // subtle golden shimmer on his ball (set false to make him a surprise)
@@ -343,7 +343,7 @@ function getCandidates() {
   const reach = balls.filter((b) => b.inPit && Math.abs(b.slot.x - state.x) <= CONFIG.CATCH_RADIUS);
   if (!reach.length) return [];
   const top = Math.min(...reach.map((b) => b.slot.y));
-  return reach.filter((b) => b.slot.y <= top + 30);           // only the exposed top layer
+  return reach.filter((b) => b.slot.y <= top + 30);            // only the exposed top layer
 }
 function updateReach() {
   const set = state.busy ? [] : getCandidates();
@@ -412,7 +412,7 @@ async function drop() {
   // ---- decide the outcome up-front -------------------------------------
   const cands = getCandidates();
   const target = cands.length ? weightedPick(cands) : null;
-  const slipped = Math.random() < CONFIG.MISS_CHANCE;           // random chance to miss entirely
+  const slipped = Math.random() < CONFIG.MISS_CHANCE;            // random chance to miss entirely
   const caught = !!target && !slipped;
   const depth = target ? Math.max(40, target.slot.y - 80) : CONFIG.EMPTY_DEPTH;
 
@@ -612,7 +612,7 @@ btnDrop.addEventListener('click', () => { Sfx.unlock(); drop(); });
 btnClaim.addEventListener('click', claim);
 
 addEventListener('keydown', (e) => {
-  if (!reveal.hidden) return;                                   // pop-up open: only the Claim button listens
+  if (!reveal.hidden) return;                                    // pop-up open: only the Claim button listens
   const k = e.key;
   if (k === 'ArrowLeft' || k === 'a' || k === 'A') { state.keyL = true; refreshDir(); e.preventDefault(); }
   else if (k === 'ArrowRight' || k === 'd' || k === 'D') { state.keyR = true; refreshDir(); e.preventDefault(); }
