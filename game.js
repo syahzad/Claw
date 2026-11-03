@@ -41,8 +41,6 @@ const CONFIG = {
     'balls/rifqi.png',
     'balls/rizal.png',
     'balls/syahid.png',
-    // 'PASTE_IMAGE_URL_HERE',      // ← add more balls by pasting links
-    // 'PASTE_IMAGE_URL_HERE',
   ],
 
   /* ---- THE SPECIAL BALL (always added to the machine) ------------------ */
@@ -55,7 +53,8 @@ const CONFIG = {
   PLACEHOLDER_IMAGE: '',
 
   /* ---- GAMEPLAY -------------------------------------------------------- */
-  MISS_CHANCE: 0.35,          // 0.35 = 35% of drops that WOULD have gripped a ball slip away
+  MISS_CHANCE: 0.35,          // 0.35 = 35% of drops that WOULD have gripped a normal ball slip away
+  PRINCE_MISS_CHANCE: 0.60,   // 0.60 = 60% chance to miss specifically if the Prince ball is targeted
   CATCH_RADIUS: 46,           // px: how far from the claw a ball may be and still be reachable
   CLAW_SPEED: 230,            // px per second while a move button is held
   EMPTY_DEPTH: 150,           // how deep the claw dips when nothing is below it
@@ -412,7 +411,14 @@ async function drop() {
   // ---- decide the outcome up-front -------------------------------------
   const cands = getCandidates();
   const target = cands.length ? weightedPick(cands) : null;
-  const slipped = Math.random() < CONFIG.MISS_CHANCE;            // random chance to miss entirely
+  
+  let slipped = false;
+  if (target) {
+    // Check if the targeted ball is the Prince, and use the 60% chance if so
+    const missRate = target.special ? CONFIG.PRINCE_MISS_CHANCE : CONFIG.MISS_CHANCE;
+    slipped = Math.random() < missRate;
+  }
+  
   const caught = !!target && !slipped;
   const depth = target ? Math.max(40, target.slot.y - 80) : CONFIG.EMPTY_DEPTH;
 
