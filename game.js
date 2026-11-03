@@ -54,7 +54,7 @@ const CONFIG = {
 
   /* ---- GAMEPLAY -------------------------------------------------------- */
   MISS_CHANCE: 0.35,          // 0.35 = 35% of drops that WOULD have gripped a normal ball slip away
-  PRINCE_MISS_CHANCE: 0.60,   // 0.60 = 60% chance to miss specifically if the Prince ball is targeted
+  PRINCE_MISS_CHANCE: 0.90,   // 0.60 = 60% chance to miss specifically if the Prince ball is targeted
   CATCH_RADIUS: 46,           // px: how far from the claw a ball may be and still be reachable
   CLAW_SPEED: 230,            // px per second while a move button is held
   EMPTY_DEPTH: 150,           // how deep the claw dips when nothing is below it
