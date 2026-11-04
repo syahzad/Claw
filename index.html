@@ -60,40 +60,7 @@
           <div class="runes runes-v rv-r" id="runesRight"></div>
 
           <div class="pit" id="pit">
-            <div class="backwall"></div>
-            <div class="floor"></div>
-
-            <div class="rail"><div class="rail-bar"></div></div>
-
-            <div class="carriage" id="carriage">
-              <div class="beam" id="beam"></div>
-              <div class="trolley"></div>
-              <div class="rope" id="rope"></div>
-              <div class="claw" id="claw" style="--arm:32">
-                <svg viewBox="0 0 68 80" width="68" height="80" aria-hidden="true">
-                  <defs>
-                    <linearGradient id="ironG" x1="0" x2="1">
-                      <stop offset="0" stop-color="#2a2d33"/><stop offset=".45" stop-color="#9aa0ab"/><stop offset="1" stop-color="#32353c"/>
-                    </linearGradient>
-                    <linearGradient id="ironV" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0" stop-color="#b9bec8"/><stop offset=".5" stop-color="#6a6f7a"/><stop offset="1" stop-color="#2b2e35"/>
-                    </linearGradient>
-                  </defs>
-                  <!-- rear arm -->
-                  <g class="arm-c"><path d="M34 22 C34 40 34 52 34 64 L38 76 L30 76 Z" fill="#454952" stroke="#16171a" stroke-width="1"/></g>
-                  <!-- left & right arms -->
-                  <g class="arm-l"><path d="M-3 0 C-12 14 -12 34 -2 50 L2 58 L5 46 C-1 34 -1 16 4 2 Z" fill="url(#ironG)" stroke="#16171a" stroke-width="1.2" stroke-linejoin="round"/><circle cx="0" cy="2" r="3.2" fill="#c9a24a" stroke="#3a2a08"/></g>
-                  <g class="arm-r"><path d="M3 0 C12 14 12 34 2 50 L-2 58 L-5 46 C1 34 1 16 -4 2 Z" fill="url(#ironG)" stroke="#16171a" stroke-width="1.2" stroke-linejoin="round"/><circle cx="0" cy="2" r="3.2" fill="#c9a24a" stroke="#3a2a08"/></g>
-                  <!-- hub -->
-                  <rect x="18" y="6" width="32" height="20" rx="5" fill="url(#ironV)" stroke="#16171a" stroke-width="1.2"/>
-                  <rect x="14" y="2" width="40" height="8" rx="3" fill="url(#ironG)" stroke="#16171a" stroke-width="1.2"/>
-                  <circle cx="34" cy="16" r="4" fill="#5de3d3" opacity=".9"><animate attributeName="opacity" values=".5;1;.5" dur="2.4s" repeatCount="indefinite"/></circle>
-                  <circle cx="22" cy="16" r="1.6" fill="#d9b25a"/><circle cx="46" cy="16" r="1.6" fill="#d9b25a"/>
-                </svg>
-              </div>
-            </div>
-
-            <div class="balls" id="balls"></div>
+            <canvas id="scene" aria-label="Claw machine playfield" role="img"></canvas>
 
             <!-- Prize chute (stone well with iron grate) -->
             <div class="chute" id="chute">
@@ -110,12 +77,12 @@
         <section class="console">
           <div class="console-plate">
             <div class="ctl-move">
-              <button class="btn-move" id="btnLeft" aria-label="Move claw left">
-                <svg viewBox="0 0 24 24"><path d="M15 4L7 12L15 20" /></svg>
-              </button>
-              <button class="btn-move" id="btnRight" aria-label="Move claw right">
-                <svg viewBox="0 0 24 24"><path d="M9 4L17 12L9 20" /></svg>
-              </button>
+              <div class="stick" id="stick" role="application" aria-label="Joystick: move the claw left, right, forwards and back">
+                <div class="stick-ring"></div>
+                <div class="stick-well"></div>
+                <div class="stick-rod" id="stickRod"></div>
+                <div class="stick-knob" id="stickKnob"></div>
+              </div>
               <span class="ctl-cap">MOVE</span>
             </div>
 
@@ -139,7 +106,7 @@
         <!-- ================= BASE ================= -->
         <footer class="base">
           <div class="base-door"></div>
-          <p class="engraved">← → or A D to move · SPACE to drop</p>
+          <p class="engraved">JOYSTICK or WASD to move · SPACE to drop</p>
           <div class="odds" id="odds"></div>
         </footer>
       </div>
