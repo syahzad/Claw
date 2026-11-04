@@ -60,6 +60,7 @@ const CONFIG = {
   PRINCE_MISS_CHANCE: 0.90,   // same, but when the Prince ball is the one gripped (0.90 = 90% slips)
   CLAW_SPEED: 170,            // px/s sideways
   CLAW_SPEED_DEPTH: 105,      // px/s towards / away from the glass
+  CAMERA_RELATIVE_CONTROLS: true,   // joystick follows the camera (stick right = claw moves right on screen)
   CLAW_SHADOW: true,          // soft shadow of the claw on the pile (natural depth cue)
 
   /* ---- PHYSICS FEEL ---------------------------------------------------- */
@@ -114,10 +115,9 @@ const CHUTE_X = 56;                           // where the claw lets go over the
 const MIN_X = 40, MAX_X = W - 40, MIN_Z = R, MAX_Z = D - R;
 const HUB_REST = 84, HUB_OFF = 4, HUB_R = 18, CRADLE = 60;
 const BRIDGE_Y = 22;
-const VX = W / 2, VY = 170, FOC = 700;        // camera: vanishing point + focal length
+const FOC = 700;                              // camera focal length
 const RES = 2;                                // canvas pixel density
 
-function proj(x, y, z) { const s = FOC / (FOC + z); return [VX + (x - VX) * s, VY + (y - VY) * s, s]; }
 
 /* =====================================================================
    3. SOUND (tiny WebAudio synth, no audio files needed)
@@ -268,7 +268,7 @@ const FX = (() => {
    5. DOM REFERENCES + STATE
    ===================================================================== */
 const stage = $('#stage'), wrap = $('#stageWrap'), cabinet = $('#cabinet');
-const sceneCv = $('#scene'), chuteEl = $('#chute'), toastEl = $('#toast');
+const sceneCv = $('#scene'), toastEl = $('#toast');
 const stickEl = $('#stick'), stickRod = $('#stickRod'), stickKnob = $('#stickKnob');
 const btnDrop = $('#btnDrop'), btnSound = $('#btnSound');
 const hudTries = $('#hudTries'), hudPrizes = $('#hudPrizes'), socketsEl = $('#sockets');
@@ -533,8 +533,12 @@ function updateClaw(dt) {
     const ix = clamp(state.stickX + (state.keyR ? 1 : 0) - (state.keyL ? 1 : 0), -1, 1);
     const iz = clamp(state.stickZ + (state.keyU ? 1 : 0) - (state.keyD ? 1 : 0), -1, 1);
     const dz = (v) => (Math.abs(v) < 0.14 ? 0 : v);
-    c.vx += (dz(ix) * CONFIG.CLAW_SPEED - c.vx) * Math.min(1, 9 * dt);
-    c.vz += (dz(iz) * CONFIG.CLAW_SPEED_DEPTH - c.vz) * Math.min(1, 9 * dt);
+    let mx = dz(ix), mz = dz(iz);
+    if (CONFIG.CAMERA_RELATIVE_CONTROLS) {                       // stick directions follow what you see, whichever way you orbit
+      const rx = mx * cam.cY + mz * cam.sY, rz = -mx * cam.sY + mz * cam.cY; mx = rx; mz = rz;
+    }
+    c.vx += (mx * CONFIG.CLAW_SPEED - c.vx) * Math.min(1, 9 * dt);
+    c.vz += (mz * CONFIG.CLAW_SPEED * (CONFIG.CLAW_SPEED_DEPTH / CONFIG.CLAW_SPEED) - c.vz) * Math.min(1, 9 * dt);
     c.x = clamp(c.x + c.vx * dt, MIN_X, MAX_X); c.z = clamp(c.z + c.vz * dt, MIN_Z, MAX_Z);
   } else if (c.mode !== 'travel') {
     c.vx *= 1 - Math.min(1, 10 * dt); c.vz *= 1 - Math.min(1, 10 * dt);
@@ -665,7 +669,7 @@ async function drop() {
   }
 
   Sfx.thud(); navigator.vibrate && navigator.vibrate([30, 40, 60]);
-  chuteEl.classList.remove('glow'); void chuteEl.offsetWidth; chuteEl.classList.add('glow');
+  glowT = performance.now() / 1000;
   state.prizes++; hudPrizes.textContent = state.prizes;
   const homing = goTo(W / 2, D / 2);
   await wait(380);
@@ -789,119 +793,144 @@ function renderTreasury(popFirst) {
 }
 
 /* =====================================================================
-   10. RENDERING — painter's algorithm on one canvas, with perspective
+   10. CAMERA + RENDERING — true 3D orbit camera, painter's algorithm on one canvas
    ===================================================================== */
-const ctx = sceneCv.getContext('2d');
+let ctx = sceneCv.getContext('2d');
+const mainCtx = ctx;
 sceneCv.width = W * RES; sceneCv.height = H * RES;
-let backdrop = null;
+const roomCv = document.createElement('canvas'); roomCv.width = W * RES; roomCv.height = H * RES;
+const roomCtx = roomCv.getContext('2d');
+let roomKey = '';                                               // the room is cached and only redrawn while the camera moves
 
-function buildBackdrop() {
-  const cv = document.createElement('canvas'); cv.width = W * RES; cv.height = H * RES;
-  const g = cv.getContext('2d'); g.scale(RES, RES);
+const PIV = [W / 2, 230, D / 2], CAMD = FOC + D / 2;            // the camera orbits this point
+const cam = { yaw: 0, pitch: 0, tyaw: 0, tpitch: 0, cY: 1, sY: 0, cP: 1, sP: 0, k: 1, cx: W / 2, cy: H / 2, pos: [W / 2, 230, -CAMD], view: 'front' };
+const VIEWS = { front: [0, 0], angle: [32, 20], side: [72, 6], top: [0, 70] };   // yaw°, pitch°
+const CORNERS = []; for (const x of [0, W]) for (const y of [0, H]) for (const z of [0, D]) CORNERS.push([x, y, z]);
+let glowT = -1e9;                                               // prize-chute glow timer
+
+function rawProj(x, y, z) {
+  const px = x - PIV[0], py = y - PIV[1], pz = z - PIV[2];
+  const x1 = px * cam.cY - pz * cam.sY, z1 = px * cam.sY + pz * cam.cY;
+  const y2 = py * cam.cP - z1 * cam.sP, z2 = py * cam.sP + z1 * cam.cP;
+  const dpt = z2 + CAMD, s = FOC / dpt;
+  return [W / 2 + x1 * s, PIV[1] + y2 * s, s, dpt];
+}
+function camUpdate() {                                           // set matrices, camera position and auto-fit zoom
+  cam.cY = Math.cos(cam.yaw); cam.sY = Math.sin(cam.yaw); cam.cP = Math.cos(cam.pitch); cam.sP = Math.sin(cam.pitch);
+  cam.pos = [PIV[0] - cam.cP * cam.sY * CAMD, PIV[1] - cam.sP * CAMD, PIV[2] - cam.cP * cam.cY * CAMD];
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  for (const c of CORNERS) { const r = rawProj(c[0], c[1], c[2]); x0 = Math.min(x0, r[0]); x1 = Math.max(x1, r[0]); y0 = Math.min(y0, r[1]); y1 = Math.max(y1, r[1]); }
+  cam.k = clamp(Math.min(W / (x1 - x0), H / (y1 - y0)), 0.5, 1.7);
+  cam.cx = (x0 + x1) / 2; cam.cy = (y0 + y1) / 2;
+}
+/* world → canvas: [x, y, scale, depth] (bigger depth = further away) */
+function proj(x, y, z) { const r = rawProj(x, y, z); return [(r[0] - cam.cx) * cam.k + W / 2, (r[1] - cam.cy) * cam.k + H / 2, r[2] * cam.k, r[3]]; }
+/* is the surface at point p with normal n turned towards the camera? */
+const vis = (px, py, pz, nx, ny, nz) => (cam.pos[0] - px) * nx + (cam.pos[1] - py) * ny + (cam.pos[2] - pz) * nz > 0;
+
+function setView(name) {
+  const v = VIEWS[name]; if (!v) return;
+  cam.view = name; cam.tyaw = v[0] * Math.PI / 180; cam.tpitch = v[1] * Math.PI / 180;
+  document.querySelectorAll('#views button').forEach((b) => b.classList.toggle('on', b.dataset.view === name));
+}
+
+/* ---- the room: bricks and planks are laid out once, projected every frame ---- */
+let ROOM = null;
+function buildRoom() {
   const rnd = mulberry32(11);
-  const poly = (pts, fill, stroke, lw) => {
-    g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.closePath();
-    if (fill) { g.fillStyle = fill; g.fill(); }
-    if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw || 1; g.lineJoin = 'round'; g.stroke(); }
-  };
-  /* a grid of bricks / planks laid on any plane: map(u,v) -> projected point */
-  const grid = (map, u0, u1, v0, v1, rowH, colW, hue, sat, lum, lumVar, mortar) => {
-    const rows = Math.ceil((v1 - v0) / rowH);
+  const mk = (u0, u1, v0, v1, rowH, colW, hue, sat, lum, lumVar) => {
+    const list = [], rows = Math.ceil((v1 - v0) / rowH);
     for (let r = 0; r < rows; r++) {
       const va = v0 + r * rowH, vb = Math.min(v1, va + rowH), off = (r % 2) * colW / 2;
       for (let ua0 = u0 - off; ua0 < u1; ua0 += colW) {
         const ua = Math.max(u0, ua0), ub = Math.min(u1, ua0 + colW);
         if (ub - ua < 2) continue;
-        const l = lum + (rnd() - 0.5) * lumVar;
-        poly([map(ua, va), map(ub, va), map(ub, vb), map(ua, vb)], `hsl(${hue + (rnd() - 0.5) * 10},${sat}%,${l}%)`, mortar || 'rgba(0,0,0,.55)', 1.3);
+        list.push({ ua, ub, va, vb, fill: `hsl(${(hue + (rnd() - 0.5) * 10).toFixed(0)},${sat}%,${(lum + (rnd() - 0.5) * lumVar).toFixed(1)}%)` });
       }
     }
+    return list;
   };
-  const shade = (pts, a0, a1, horizontal) => {            // darkening gradient over a polygon
-    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
-    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-    const gr = horizontal ? g.createLinearGradient(x0, 0, x1, 0) : g.createLinearGradient(0, y0, 0, y1);
-    gr.addColorStop(0, a0); gr.addColorStop(1, a1);
-    poly(pts, gr);
+  ROOM = {
+    ceil: mk(0, W, 0, D, 85, 134, 24, 28, 11, 4), back: mk(0, W, 0, F, 36, 64, 232, 9, 24, 7),
+    left: mk(0, D, 0, F, 36, 56, 232, 9, 25, 7), right: mk(0, D, 0, F, 36, 56, 232, 9, 25, 7),
+    floor: mk(0, W, 0, D, 85, 56, 26, 46, 19, 6),
+    divSide: mk(0, D, WALL_TOP, F, 34, 56, 232, 8, 20, 6), divFront: mk(WALL_X0, WALL_X1, WALL_TOP, F, 34, 12, 232, 8, 28, 6),
+    chuteFront: mk(0, WALL_X1, F - 84, F + 14, 33, 46, 232, 8, 27, 6),
   };
+}
+function poly(pts, fill, stroke, lw) {
+  ctx.beginPath(); for (let i = 0; i < pts.length; i++) (i ? ctx.lineTo(pts[i][0], pts[i][1]) : ctx.moveTo(pts[i][0], pts[i][1])); ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 1; ctx.lineJoin = 'round'; ctx.stroke(); }
+}
+function drawGrid(list, map, mortar) {
+  for (const q of list) poly([map(q.ua, q.va), map(q.ub, q.va), map(q.ub, q.vb), map(q.ua, q.vb)], q.fill, mortar || 'rgba(0,0,0,.55)', 1.2);
+}
+function shade(pts, a, b, c0, c1) {                              // darkening gradient across a face, from point a to point b
+  const gr = ctx.createLinearGradient(a[0], a[1], b[0] + 0.01, b[1] + 0.01); gr.addColorStop(0, c0); gr.addColorStop(1, c1); poly(pts, gr);
+}
+function faceText(text, p0, p1, p2, w, h, color) {              // text laid onto a (roughly flat) face given 3 projected corners
+  ctx.save(); ctx.transform((p1[0] - p0[0]) / w, (p1[1] - p0[1]) / w, (p2[0] - p0[0]) / h, (p2[1] - p0[1]) / h, p0[0], p0[1]);
+  ctx.fillStyle = color; ctx.font = `700 ${h * 0.34}px Cinzel, Georgia, serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h * 0.7); ctx.restore();
+}
 
-  g.fillStyle = '#07050b'; g.fillRect(0, 0, W, H);
+function drawRoom() {
+  const P = proj;
+  ctx.fillStyle = '#07050b'; ctx.fillRect(0, 0, W, H);
 
-  /* ceiling */
-  const ceil = (u, v) => proj(u, 0, v);
-  grid(ceil, 0, W, 0, D, 85, 134, 24, 28, 11, 4);
-  /* back wall */
-  grid((u, v) => proj(u, v, D), 0, W, 0, F, 36, 64, 232, 9, 24, 7);
-  /* side walls */
-  grid((u, v) => proj(0, v, u), 0, D, 0, F, 36, 56, 232, 9, 25, 7);
-  grid((u, v) => proj(W, v, u), 0, D, 0, F, 36, 56, 232, 9, 25, 7);
-  /* floor */
-  for (let ci = 0, x0 = 0; x0 < W; x0 += 56, ci++) {
-    const cut = ci % 2 ? 56 : 112;
-    for (const [za, zb] of [[0, cut], [cut, D]]) {
-      const l = 17 + rnd() * 6;
-      poly([proj(x0, F, za), proj(Math.min(W, x0 + 56), F, za), proj(Math.min(W, x0 + 56), F, zb), proj(x0, F, zb)], `hsl(${26 + rnd() * 6},46%,${l}%)`, 'rgba(0,0,0,.6)', 1.4);
+  if (vis(0, 0, 0, 0, 1, 0)) {                                   // ceiling (timber)
+    drawGrid(ROOM.ceil, (u, v) => P(u, 0, v));
+    shade([P(0, 0, 0), P(W, 0, 0), P(W, 0, D), P(0, 0, D)], P(W / 2, 0, 0), P(W / 2, 0, D), 'rgba(0,0,0,.3)', 'rgba(0,0,0,.7)');
+  }
+  if (vis(0, 0, D, 0, 0, -1)) {                                  // back wall
+    drawGrid(ROOM.back, (u, v) => P(u, v, D));
+    shade([P(0, 0, D), P(W, 0, D), P(W, F, D), P(0, F, D)], P(W / 2, 0, D), P(W / 2, F, D), 'rgba(0,0,0,.3)', 'rgba(0,0,0,.42)');
+    for (const x of [200, 336]) {                                // arrow slits
+      const q = [P(x, 70, D), P(x + 22, 70, D), P(x + 22, 170, D), P(x, 170, D)];
+      poly(q, '#0c0a1c', '#25262e', 3); shade(q, q[0], q[3], 'rgba(90,100,255,.16)', 'rgba(60,60,160,.03)');
+    }
+    for (const x of [118, 418]) {                                // hanging banners
+      poly([P(x, 14, D), P(x + 56, 14, D), P(x + 56, 190, D), P(x + 28, 214, D), P(x, 190, D)], '#6d1119', '#d9b052', 2.2);
+      poly([P(x + 8, 24, D), P(x + 48, 24, D), P(x + 48, 180, D), P(x + 28, 200, D), P(x + 8, 180, D)], null, 'rgba(224,176,80,.55)', 1);
+      const c = P(x + 28, 96, D); ctx.fillStyle = 'rgba(224,176,80,.85)'; ctx.beginPath(); ctx.arc(c[0], c[1], 9 * c[2], 0, TAU); ctx.fill();
+      ctx.fillStyle = '#6d1119'; ctx.beginPath(); ctx.arc(c[0], c[1], 4.5 * c[2], 0, TAU); ctx.fill();
     }
   }
-
-  /* depth shading on every surface (further = darker) */
-  shade([proj(0, 0, 0), proj(0, 0, D), proj(0, F, D), proj(0, F, 0)], 'rgba(0,0,0,0)', 'rgba(0,0,0,.55)', true);
-  shade([proj(W, 0, D), proj(W, 0, 0), proj(W, F, 0), proj(W, F, D)], 'rgba(0,0,0,.55)', 'rgba(0,0,0,0)', true);
-  shade([proj(0, 0, D), proj(W, 0, D), proj(W, F, D), proj(0, F, D)], 'rgba(0,0,0,.3)', 'rgba(0,0,0,.42)', false);
-  shade([proj(0, 0, 0), proj(W, 0, 0), proj(W, 0, D), proj(0, 0, D)], 'rgba(0,0,0,.3)', 'rgba(0,0,0,.7)', false);
-  shade([proj(0, F, 0), proj(W, F, 0), proj(W, F, D), proj(0, F, D)], 'rgba(0,0,0,.65)', 'rgba(0,0,0,.05)', false);
-
-  /* back wall dressing: arrow slits and hanging banners */
-  for (const x of [200, 336]) {
-    const a = proj(x, 70, D), b = proj(x + 22, 70, D), c = proj(x + 22, 170, D), d = proj(x, 170, D);
-    poly([a, b, c, d], '#0c0a1c', '#25262e', 3);
-    const gr = g.createLinearGradient(0, a[1], 0, d[1]); gr.addColorStop(0, 'rgba(90,100,255,.16)'); gr.addColorStop(1, 'rgba(60,60,160,.03)');
-    poly([a, b, c, d], gr);
+  if (vis(0, 0, 0, 1, 0, 0)) {                                   // left wall
+    drawGrid(ROOM.left, (u, v) => P(0, v, u));
+    shade([P(0, 0, 0), P(0, 0, D), P(0, F, D), P(0, F, 0)], P(0, F / 2, 0), P(0, F / 2, D), 'rgba(0,0,0,0)', 'rgba(0,0,0,.55)');
   }
-  for (const x of [118, 418]) {
-    const a = proj(x, 14, D), b = proj(x + 56, 14, D), c = proj(x + 56, 190, D), m = proj(x + 28, 214, D), d = proj(x, 190, D);
-    poly([a, b, c, m, d], '#6d1119', '#d9b052', 2.2);
-    const e1 = proj(x + 8, 24, D), e2 = proj(x + 48, 24, D), e3 = proj(x + 48, 180, D), e4 = proj(x + 28, 200, D), e5 = proj(x + 8, 180, D);
-    poly([e1, e2, e3, e4, e5], null, 'rgba(224,176,80,.55)', 1);
-    const cc = proj(x + 28, 96, D); g.fillStyle = 'rgba(224,176,80,.85)'; g.beginPath(); g.arc(cc[0], cc[1], 9 * cc[2], 0, TAU); g.fill();
-    g.fillStyle = '#6d1119'; g.beginPath(); g.arc(cc[0], cc[1], 4.5 * cc[2], 0, TAU); g.fill();
+  if (vis(W, 0, 0, -1, 0, 0)) {                                  // right wall
+    drawGrid(ROOM.right, (u, v) => P(W, v, u));
+    shade([P(W, 0, 0), P(W, 0, D), P(W, F, D), P(W, F, 0)], P(W, F / 2, 0), P(W, F / 2, D), 'rgba(0,0,0,0)', 'rgba(0,0,0,.55)');
   }
-
-  /* the prize chute: a dark shaft in the floor with a tall stone divider */
-  poly([proj(0, F, 0), proj(WALL_X0, F, 0), proj(WALL_X0, F, D), proj(0, F, D)], '#030204');
-  const ch = g.createLinearGradient(0, proj(0, F, D)[1], 0, F + 10); ch.addColorStop(0, 'rgba(255,180,80,.0)'); ch.addColorStop(1, 'rgba(255,180,80,.14)');
-  poly([proj(0, F, 0), proj(WALL_X0, F, 0), proj(WALL_X0, F, D), proj(0, F, D)], ch);
-  grid((u, v) => proj(WALL_X1, v, u), 0, D, WALL_TOP, F, 34, 56, 232, 8, 20, 6);                     // wall: side face
-  shade([proj(WALL_X1, WALL_TOP, 0), proj(WALL_X1, WALL_TOP, D), proj(WALL_X1, F, D), proj(WALL_X1, F, 0)], 'rgba(0,0,0,.05)', 'rgba(0,0,0,.5)', true);
-  poly([proj(WALL_X0, WALL_TOP, 0), proj(WALL_X1, WALL_TOP, 0), proj(WALL_X1, WALL_TOP, D), proj(WALL_X0, WALL_TOP, D)], '#6a6e7a', '#15161a', 1.5);   // top face
-  grid((u, v) => proj(u, v, 0), WALL_X0, WALL_X1, WALL_TOP, F, 34, 12, 232, 8, 30, 6);              // front face
-  poly([proj(WALL_X0, WALL_TOP, 0), proj(WALL_X1, WALL_TOP, 0), proj(WALL_X1, WALL_TOP, D), proj(WALL_X0, WALL_TOP, D)], 'rgba(255,255,255,.08)');
-
+  if (vis(0, F, 0, 0, -1, 0)) {                                  // floor
+    drawGrid(ROOM.floor, (u, v) => P(u, F, v));
+    shade([P(0, F, 0), P(W, F, 0), P(W, F, D), P(0, F, D)], P(W / 2, F, D), P(W / 2, F, 0), 'rgba(0,0,0,.65)', 'rgba(0,0,0,.05)');
+    poly([P(0, F, 0), P(WALL_X0, F, 0), P(WALL_X0, F, D), P(0, F, D)], '#030204');                       // the prize shaft
+    const gr = ctx.createLinearGradient(...P(WALL_X0 / 2, F, D).slice(0, 2), ...P(WALL_X0 / 2, F, 0).slice(0, 2)); gr.addColorStop(0, 'rgba(255,180,80,0)'); gr.addColorStop(1, 'rgba(255,180,80,.14)');
+    poly([P(0, F, 0), P(WALL_X0, F, 0), P(WALL_X0, F, D), P(0, F, D)], gr);
+  }
+  /* the stone divider wall beside the prize shaft */
+  if (vis(WALL_X1, 0, 0, 1, 0, 0)) {
+    drawGrid(ROOM.divSide, (u, v) => P(WALL_X1, v, u));
+    shade([P(WALL_X1, WALL_TOP, 0), P(WALL_X1, WALL_TOP, D), P(WALL_X1, F, D), P(WALL_X1, F, 0)], P(WALL_X1, F, 0), P(WALL_X1, F, D), 'rgba(0,0,0,.05)', 'rgba(0,0,0,.5)');
+  }
+  if (vis(WALL_X0, 0, 0, -1, 0, 0)) drawGrid(ROOM.divSide, (u, v) => P(WALL_X0, v, u));
+  if (vis(0, WALL_TOP, 0, 0, -1, 0)) poly([P(WALL_X0, WALL_TOP, 0), P(WALL_X1, WALL_TOP, 0), P(WALL_X1, WALL_TOP, D), P(WALL_X0, WALL_TOP, D)], '#6f7380', '#15161a', 1.5);
+  if (vis(0, 0, 0, 0, 0, -1)) drawGrid(ROOM.divFront, (u, v) => P(u, v, 0));
   /* iron gantry rails along both walls */
-  for (const [x0, x1] of [[0, 16], [W - 16, W]]) {
-    poly([proj(x0, BRIDGE_Y - 9, 0), proj(x1, BRIDGE_Y - 9, 0), proj(x1, BRIDGE_Y - 9, D), proj(x0, BRIDGE_Y - 9, D)], '#7a808c', '#101114', 1.2);
-    poly([proj(x0, BRIDGE_Y + 9, 0), proj(x1, BRIDGE_Y + 9, 0), proj(x1, BRIDGE_Y + 9, D), proj(x0, BRIDGE_Y + 9, D)], '#2c2f36', '#101114', 1.2);
+  for (const [x0, x1, xi] of [[0, 16, 16], [W - 16, W, W - 16]]) {
+    poly([P(x0, BRIDGE_Y - 9, 0), P(x1, BRIDGE_Y - 9, 0), P(x1, BRIDGE_Y - 9, D), P(x0, BRIDGE_Y - 9, D)], '#7a808c', '#101114', 1.2);
+    poly([P(xi, BRIDGE_Y - 9, 0), P(xi, BRIDGE_Y + 9, 0), P(xi, BRIDGE_Y + 9, D), P(xi, BRIDGE_Y - 9, D)], '#3b3f48', '#101114', 1.2);
   }
-
-  /* torch light washing the room */
-  g.globalCompositeOperation = 'lighter';
-  for (const [x, y, rr] of [[-10, 120, 260], [W + 10, 120, 260], [VX, 20, 240]]) {
-    const gr = g.createRadialGradient(x, y, 0, x, y, rr); gr.addColorStop(0, 'rgba(255,150,60,.34)'); gr.addColorStop(1, 'rgba(255,150,60,0)');
-    g.fillStyle = gr; g.fillRect(0, 0, W, H);
-  }
-  g.globalCompositeOperation = 'source-over';
-  /* ambient occlusion + vignette */
-  const vg = g.createRadialGradient(VX, 260, 120, VX, 260, 380); vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.62)');
-  g.fillStyle = vg; g.fillRect(0, 0, W, H);
-  /* the strip of floor edge facing us */
-  g.fillStyle = '#2a170a'; g.fillRect(0, F, W, H - F);
-  g.fillStyle = 'rgba(255,200,120,.18)'; g.fillRect(0, F, W, 1.5);
-  return cv;
 }
 
 function drawBall(b, t) {
-  const [sx, sy, s] = proj(b.x, b.y, b.z), r = R * s;
+  const [sx, sy, s, dpt] = proj(b.x, b.y, b.z), r = R * s;
   ctx.save();
+  if (b.inHole) ctx.globalAlpha = clamp(1 - (b.y - F) / 90, 0, 1);        // sinking into the prize shaft
   ctx.translate(sx, sy);
   if (CONFIG.HIGHLIGHT_SPECIAL && b.special) {                  // royal halo
     const a = 0.32 + 0.14 * Math.sin(t * 3);
@@ -920,12 +949,12 @@ function drawBall(b, t) {
     ctx.fillStyle = '#e0b050'; ctx.font = `${r * 0.9}px serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('✦', 0, 0);
   }
   ctx.restore();
-  /* sphere shading: soft shadow side + gloss, stronger fog the further back it is */
+  /* sphere shading: shadow side + gloss, with stronger fog the further from the camera */
   ctx.save(); ctx.beginPath(); ctx.arc(0, 0, r * 0.985, 0, TAU); ctx.clip();
   const sh = ctx.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.1, 0, 0, r);
-  sh.addColorStop(0, 'rgba(255,255,255,.0)'); sh.addColorStop(0.62, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.42)');
+  sh.addColorStop(0, 'rgba(255,255,255,0)'); sh.addColorStop(0.62, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,.42)');
   ctx.fillStyle = sh; ctx.fillRect(-r, -r, 2 * r, 2 * r);
-  const fog = clamp(0.06 + (b.z / D) * 0.34 + (b.y < F - 3 * R ? 0 : (b.y - (F - 3 * R)) / (3 * R) * 0.12), 0, 0.6);
+  const fog = clamp(0.06 + (dpt - (CAMD - 90)) / 170 * 0.3 + (b.y < F - 3 * R ? 0 : (b.y - (F - 3 * R)) / (3 * R) * 0.12), 0.04, 0.6);
   ctx.fillStyle = `rgba(8,5,16,${fog})`; ctx.fillRect(-r, -r, 2 * r, 2 * r);
   const gl = ctx.createRadialGradient(-r * 0.38, -r * 0.5, 0, -r * 0.38, -r * 0.5, r * 0.55);
   gl.addColorStop(0, 'rgba(255,255,255,.38)'); gl.addColorStop(1, 'rgba(255,255,255,0)');
@@ -935,28 +964,22 @@ function drawBall(b, t) {
 }
 
 function ellipseShadow(x, y, z, rx, a) {
-  const [sx, sy, s] = proj(x, y, z);
-  ctx.save(); ctx.translate(sx, sy); ctx.scale(1, 0.32);
+  const [sx, sy, s] = proj(x, y, z), ratio = 0.28 + 0.72 * Math.pow(Math.sin(Math.max(0, cam.pitch)), 0.9);
+  ctx.save(); ctx.translate(sx, sy); ctx.scale(1, ratio);
   const gr = ctx.createRadialGradient(0, 0, 0, 0, 0, rx * s); gr.addColorStop(0, `rgba(0,0,0,${a})`); gr.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, rx * s, 0, TAU); ctx.fill(); ctx.restore();
 }
 
 function ironGradient(x0, y0, x1, y1) {
-  const gr = ctx.createLinearGradient(x0, y0, x1, y1);
+  const gr = ctx.createLinearGradient(x0, y0, x1 + 0.01, y1 + 0.01);
   gr.addColorStop(0, '#9aa0ad'); gr.addColorStop(0.45, '#4c505a'); gr.addColorStop(0.55, '#2d3037'); gr.addColorStop(1, '#5d626d');
   return gr;
 }
 
 function drawBridge() {                                         // the moving iron beam + trolley at the ceiling
-  const cz = claw.z, [lx, ty] = proj(0, BRIDGE_Y - 9, cz), [rx, by, s] = proj(W, BRIDGE_Y + 9, cz);
-  ctx.fillStyle = ironGradient(0, ty, 0, by); ctx.fillRect(lx, ty, rx - lx, by - ty);
-  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(lx, by - 1.5 * s, rx - lx, 1.5 * s);
-  ctx.fillStyle = 'rgba(255,255,255,.25)'; ctx.fillRect(lx, ty, rx - lx, 1.2 * s);
-  ctx.fillStyle = '#d6b05a'; for (let x = 20; x < W; x += 44) { const [px, py] = proj(x, BRIDGE_Y, cz); ctx.beginPath(); ctx.arc(px, py, 1.7 * s, 0, TAU); ctx.fill(); }
-  /* soft shadow the beam throws on the back wall */
-  const [, sy2] = proj(0, BRIDGE_Y + 30, D);
-  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.fillRect(proj(0, 0, D)[0], sy2, proj(W, 0, D)[0] - proj(0, 0, D)[0], 6);
-  /* trolley */
+  const cz = claw.z, A = proj(0, BRIDGE_Y - 9, cz), B = proj(W, BRIDGE_Y - 9, cz), C = proj(W, BRIDGE_Y + 9, cz), Dd = proj(0, BRIDGE_Y + 9, cz);
+  poly([A, B, C, Dd], ironGradient(A[0], A[1], Dd[0], Dd[1]), '#101114', 1.2);
+  ctx.fillStyle = '#d6b05a'; for (let x = 20; x < W; x += 44) { const [px, py, ps] = proj(x, BRIDGE_Y, cz); ctx.beginPath(); ctx.arc(px, py, 1.7 * ps, 0, TAU); ctx.fill(); }
   const [tx, tyc, ts] = proj(claw.x, BRIDGE_Y + 8, cz);
   ctx.save(); ctx.translate(tx, tyc); ctx.scale(ts, ts);
   ctx.fillStyle = ironGradient(0, -14, 0, 16); ctx.strokeStyle = '#101114'; ctx.lineWidth = 2;
@@ -978,9 +1001,9 @@ function drawHub(t) {
   const h = hubPos(), [sx, sy, s] = proj(h.x, h.y, h.z);
   ctx.save(); ctx.translate(sx, sy); ctx.scale(s, s);
   ctx.strokeStyle = '#101114'; ctx.lineWidth = 2;
-  ctx.fillStyle = ironGradient(-26, 0, 26, 0); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-26, -32, 52, 22, 6) : ctx.rect(-26, -32, 52, 22); ctx.fill(); ctx.stroke();   // top cap
+  ctx.fillStyle = ironGradient(-26, 0, 26, 0); ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-26, -32, 52, 22, 6) : ctx.rect(-26, -32, 52, 22); ctx.fill(); ctx.stroke();
   const bd = ctx.createLinearGradient(-22, 0, 22, 0); bd.addColorStop(0, '#2b2e35'); bd.addColorStop(0.35, '#b8bec9'); bd.addColorStop(0.6, '#5c616c'); bd.addColorStop(1, '#262930');
-  ctx.fillStyle = bd; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-22, -14, 44, 36, 9) : ctx.rect(-22, -14, 44, 36); ctx.fill(); ctx.stroke();                            // body
+  ctx.fillStyle = bd; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-22, -14, 44, 36, 9) : ctx.rect(-22, -14, 44, 36); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#d6b05a'; for (const x of [-16, 16]) { ctx.beginPath(); ctx.arc(x, -2, 2.6, 0, TAU); ctx.fill(); }
   const pulse = 0.65 + 0.35 * Math.sin(t * 2.6);                // glowing rune gem
   const gm = ctx.createRadialGradient(0, 2, 0, 0, 2, 9); gm.addColorStop(0, `rgba(190,255,245,${pulse})`); gm.addColorStop(0.5, `rgba(70,220,200,${0.8 * pulse})`); gm.addColorStop(1, 'rgba(70,220,200,0)');
@@ -989,9 +1012,11 @@ function drawHub(t) {
   ctx.restore();
 }
 
-function drawProng(k) {
-  const h = hubPos(), pts = prongLocal(claw.open), phi = PHI[k], cs = Math.cos(phi), sn = Math.sin(phi);
-  const P = pts.map((p) => proj(h.x + cs * p.r, h.y + p.y, h.z + sn * p.r));
+function prongWorld(k) {
+  const h = hubPos(), phi = PHI[k], cs = Math.cos(phi), sn = Math.sin(phi);
+  return prongLocal(claw.open).map((p) => proj(h.x + cs * p.r, h.y + p.y, h.z + sn * p.r));
+}
+function drawProng(P) {
   const w = 9.5 * P[0][2];
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   const path = () => { ctx.beginPath(); P.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); };
@@ -1014,31 +1039,54 @@ function surfaceY(x, z) {                                       // height of the
   return top;
 }
 
+function drawChuteFront(t) {                                    // the stone block in front of the prize shaft (drawn last: it is nearest the glass)
+  const P = proj, z0 = -14, yT = F - 84, yB = F + 14;
+  if (vis(0, 0, z0, 0, 0, -1)) {
+    drawGrid(ROOM.chuteFront, (u, v) => P(u, v, z0), 'rgba(0,0,0,.6)');
+    const a = P(6, yT + 36, z0), b = P(WALL_X1 - 10, yT + 36, z0), c = P(6, yT + 74, z0);
+    faceText('PRIZE', a, b, c, WALL_X1 - 16, 38, '#e0b050');
+    poly([P(0, yT, z0), P(WALL_X1, yT, z0), P(WALL_X1, yB, z0), P(0, yB, z0)], 'rgba(0,0,0,.0)', '#0d0e11', 2);
+  }
+  if (vis(0, yT, 0, 0, -1, 0)) {                                // top face with an iron grate over the shaft
+    poly([P(0, yT, z0), P(WALL_X1, yT, z0), P(WALL_X1, yT, 0), P(0, yT, 0)], '#6a6e7a', '#0d0e11', 1.5);
+  }
+  if (vis(WALL_X1, 0, 0, 1, 0, 0)) poly([P(WALL_X1, yT, z0), P(WALL_X1, yT, 0), P(WALL_X1, yB, 0), P(WALL_X1, yB, z0)], '#2d3037', '#0d0e11', 1.5);
+  if (t - glowT < 0.9) {                                        // prize glow
+    const k = 1 - (t - glowT) / 0.9, c = proj(56, F - 10, D / 2), rr = 140 * c[2], gr = ctx.createRadialGradient(c[0], c[1], 0, c[0], c[1], rr);
+    gr.addColorStop(0, `rgba(255,225,130,${0.7 * k})`); gr.addColorStop(1, 'rgba(255,200,90,0)');
+    ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H); ctx.globalCompositeOperation = 'source-over';
+  }
+}
+
 function render(t) {
+  camUpdate();
+  const key = cam.yaw.toFixed(4) + '|' + cam.pitch.toFixed(4);
+  if (key !== roomKey) {                                        // camera moved: repaint the room into its cache
+    roomKey = key; ctx = roomCtx; ctx.setTransform(RES, 0, 0, RES, 0, 0); ctx.clearRect(0, 0, W, H); drawRoom(); ctx = mainCtx;
+  }
   ctx.setTransform(RES, 0, 0, RES, 0, 0);
   ctx.clearRect(0, 0, W, H);
-  ctx.drawImage(backdrop, 0, 0, W, H);
+  ctx.drawImage(roomCv, 0, 0, W, H);
 
   /* contact shadows under the balls */
   for (const b of balls) {
     if (!b.active || b.inHole) continue;
-    const h = F - R - b.y;
-    ellipseShadow(b.x, F, b.z, R * 1.05, clamp(0.5 - h / 260, 0, 0.5));
+    ellipseShadow(b.x, F, b.z, R * 1.05, clamp(0.5 - (F - R - b.y) / 260, 0, 0.5));
   }
   drawBridge();
 
-  const items = [];
-  for (const b of balls) if (b.active) items.push({ k: b.z, f: () => drawBall(b, t) });
-  const h = hubPos();
-  items.push({ k: h.z + 0.3, f: drawRope });
-  items.push({ k: h.z, f: () => drawHub(t) });
-  for (let i = 0; i < 3; i++) items.push({ k: h.z + Math.sin(PHI[i]) * 30 + (i === 0 ? 0.2 : 0), f: () => drawProng(i) });
+  const items = [], h = hubPos();
+  for (const b of balls) if (b.active) items.push({ k: proj(b.x, b.y, b.z)[3], f: () => drawBall(b, t) });
+  items.push({ k: proj(h.x, h.y - 20, h.z)[3] + 0.3, f: drawRope });
+  items.push({ k: proj(h.x, h.y, h.z)[3], f: () => drawHub(t) });
+  for (let i = 0; i < 3; i++) { const P = prongWorld(i); items.push({ k: (P[2][3] + P[5][3]) / 2, f: () => drawProng(P) }); }
   if (CONFIG.CLAW_SHADOW) {
     const sy = surfaceY(h.x, h.z), height = Math.max(0, sy - h.y);
-    items.push({ k: h.z + 0.6, f: () => ellipseShadow(h.x, sy, h.z, 46 + height * 0.05, clamp(0.5 - height / 700, 0.1, 0.5)) });
+    items.push({ k: proj(h.x, sy, h.z)[3] + 0.6, f: () => ellipseShadow(h.x, sy, h.z, 46 + height * 0.05, clamp(0.5 - height / 700, 0.1, 0.5)) });
   }
   items.sort((a, b) => b.k - a.k);                              // far → near
   for (const it of items) it.f();
+  drawChuteFront(t);
 }
 
 /* =====================================================================
@@ -1066,6 +1114,24 @@ const stickEnd = () => { if (!state.dragging) return; state.dragging = false; st
 ['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => stickEl.addEventListener(ev, stickEnd));
 stickEl.addEventListener('contextmenu', (e) => e.preventDefault());
 
+/* orbit camera: drag the glass to look around, or tap a quick view */
+let orb = null;
+sceneCv.addEventListener('pointerdown', (e) => {
+  orb = { x: e.clientX, y: e.clientY, yaw: cam.tyaw, pitch: cam.tpitch };
+  try { sceneCv.setPointerCapture(e.pointerId); } catch (err) {}
+  sceneCv.classList.add('orbit');
+});
+sceneCv.addEventListener('pointermove', (e) => {
+  if (!orb) return;
+  cam.tyaw = clamp(orb.yaw + (e.clientX - orb.x) * 0.0075, -1.45, 1.45);
+  cam.tpitch = clamp(orb.pitch + (e.clientY - orb.y) * 0.006, -0.08, 1.3);
+  cam.view = ''; document.querySelectorAll('#views button').forEach((b) => b.classList.remove('on'));
+});
+const orbEnd = () => { orb = null; sceneCv.classList.remove('orbit'); };
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach((ev) => sceneCv.addEventListener(ev, orbEnd));
+sceneCv.addEventListener('dblclick', () => setView('front'));
+document.querySelectorAll('#views button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+
 btnDrop.addEventListener('click', () => { Sfx.unlock(); drop(); });
 btnClaim.addEventListener('click', claim);
 
@@ -1074,6 +1140,7 @@ addEventListener('keydown', (e) => {
   if (!reveal.hidden) return;                                    // pop-up open: only the Claim button listens
   if (KEYS[e.key]) { state[KEYS[e.key]] = true; e.preventDefault(); }
   else if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); Sfx.unlock(); drop(); }
+  else if ((e.key === 'v' || e.key === 'V') && !e.repeat) { const names = Object.keys(VIEWS); setView(names[(names.indexOf(cam.view) + 1) % names.length]); }
 });
 addEventListener('keyup', (e) => { if (KEYS[e.key]) state[KEYS[e.key]] = false; });
 addEventListener('blur', () => { state.keyL = state.keyR = state.keyU = state.keyD = false; });
@@ -1092,6 +1159,7 @@ addEventListener('pointermove', (e) => {
 
 function frame(now) {
   const dt = Math.min(0.05, (now - lastT) / 1000); lastT = now;
+  cam.yaw += (cam.tyaw - cam.yaw) * Math.min(1, 9 * dt); cam.pitch += (cam.tpitch - cam.pitch) * Math.min(1, 9 * dt);
   updateClaw(dt);
   acc += dt; let n = 0;
   while (acc >= SUB && n < 6) { physicsStep(SUB); acc -= SUB; n++; }
@@ -1103,7 +1171,7 @@ function frame(now) {
     const kx = (state.keyR ? 1 : 0) - (state.keyL ? 1 : 0), kz = (state.keyU ? 1 : 0) - (state.keyD ? 1 : 0), key = kx + ',' + kz;
     if (key !== stickShown) { stickShown = key; drawStick(kx * STICK_R * 0.8, -kz * STICK_R * 0.8); }
   }
-  if (!reduceMotion && reveal.hidden) {                          // subtle parallax tilt of the whole cabinet
+  if (!reduceMotion && reveal.hidden && !orb) {                  // subtle parallax tilt of the whole cabinet
     tilt.x += (tilt.tx - tilt.x) * Math.min(1, 4 * dt); tilt.y += (tilt.ty - tilt.y) * Math.min(1, 4 * dt);
     cabinet.style.transform = `rotateY(${(tilt.x * 3).toFixed(2)}deg) rotateX(${(-tilt.y * 2).toFixed(2)}deg)`;
   }
@@ -1146,7 +1214,7 @@ function init() {
   $('#odds').textContent = 'FORTUNE · ' + Object.entries(CONFIG.RARITY_WEIGHTS).map(([k, w]) => `${k} ${Math.round((w / total) * 100)}%`).join(' · ');
 
   balls = [...CONFIG.BALLS.filter(Boolean).map((s) => makeBall(s, false)), makeBall(CONFIG.SPECIAL_BALL, true)];
-  backdrop = buildBackdrop();
+  buildRoom();
   seedBalls();
   claw.cols = clawColliders();
   renderTreasury(false);
@@ -1160,6 +1228,6 @@ function init() {
 init();
 
 /* tiny debug hook: open the page with #debug to poke at the machine from the console */
-if (location.hash === '#debug') window.__claw = { claw, get balls() { return balls; }, state, drop, evaluateGrab, physicsStep, CONFIG, render: () => render(0) };
+if (location.hash === '#debug') window.__claw = { cam, setView, drawRoom, drawBall, drawChuteFront, camUpdate, ctxRef: () => ctx, claw, get balls() { return balls; }, state, drop, evaluateGrab, physicsStep, CONFIG, render: () => render(0) };
 
 })();
